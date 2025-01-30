@@ -24,7 +24,7 @@ babeld.o: babeld.c version.h
 
 local.o: local.c version.h
 
-kernel.o: kernel_netlink.c kernel_socket.c
+kernel.o: kernel_netlink.c
 
 version.h:
 	./generate-version.sh > version.h
