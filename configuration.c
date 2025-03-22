@@ -469,6 +469,8 @@ parse_filter(int c, gnc_t gnc, void *closure, struct filter **filter_return)
             filter->proto = proto;
         } else if(strcmp(token, "local") == 0) {
             filter->proto = RTPROT_BABEL_LOCAL;
+        } else if(strcmp(token, "anyproto") == 0) {
+            filter->proto = RTPROT_BABEL_ANY;
         } else if(strcmp(token, "if") == 0) {
             char *interface;
             c = getstring(c, &interface, gnc, closure);
@@ -1424,7 +1426,10 @@ filter_match(struct filter *f, const unsigned char *id,
         if(!ifindex || f->ifindex != ifindex)
             return -14;
     }
-    if(f->proto) {
+    if(f->proto == RTPROT_BABEL_ANY) {
+        /* Matches all protos */
+    }
+    else if(f->proto) {
         if(!proto || f->proto != proto)
             return -15;
     } else if(proto == RTPROT_BABEL_LOCAL) {
