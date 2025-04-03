@@ -51,9 +51,6 @@ struct neighbour {
     int index_len; /* This is -1 when index is undefined */
     unsigned char index[32];
     unsigned char nonce[NONCE_LEN];
-    struct timeval challenge_deadline;
-    struct timeval challenge_request_limitation;
-    struct timeval challenge_reply_limitation;
     struct interface *ifp;
     struct buffered buf;
 };
