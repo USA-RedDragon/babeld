@@ -1,5 +1,7 @@
 PREFIX = /usr/local
 MANDIR = $(PREFIX)/share/man
+DESTDIR =
+TARGET = $(DESTDIR)
 
 CDEBUGFLAGS = -Os -g -Wall
 
