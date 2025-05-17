@@ -39,7 +39,6 @@ THE SOFTWARE.
 #include "interface.h"
 #include "route.h"
 #include "kernel.h"
-#include "hmac.h"
 #include "configuration.h"
 
 static struct filter *input_filters = NULL;
@@ -319,39 +318,6 @@ get_interface_type(int c, int *type_r, gnc_t gnc, void *closure)
     }
     free(t);
     *type_r = i;
-    return c;
-}
-
-static int
-gethex(int c, unsigned char **value_r, int *len_r, gnc_t gnc, void *closure)
-{
-    char *t = NULL;
-    unsigned char *value;
-    int len, rc;
-    c = getword(c, &t, gnc, closure);
-    if(c < -1) {
-        free(t);
-        return c;
-    }
-    len = strlen(t);
-    if(len % 2 != 0) {
-        free(t);
-        return -2;
-    }
-    value = malloc(len / 2);
-    if(value == NULL) {
-        free(t);
-        return -2;
-    }
-
-    rc = fromhex(value, t, len);
-    free(t);
-    if(rc < 0) {
-        free(value);
-        return -2;
-    }
-    *value_r = value;
-    *len_r = len / 2;
     return c;
 }
 
@@ -660,20 +626,6 @@ parse_anonymous_ifconf(int c, gnc_t gnc, void *closure,
             if(c < -1 || penalty <= 0 || penalty > 0xFFFF)
                 goto error;
             if_conf->max_rtt_penalty = penalty;
-        } else if(strcmp(token, "key") == 0) {
-            char *key_id;
-            struct key *key;
-            c = getword(c, &key_id, gnc, closure);
-            if(c < -1)
-                goto error;
-            key = find_key(key_id);
-            if(key == NULL) {
-                fprintf(stderr, "Couldn't find key %s.\n", key_id);
-                free(key_id);
-                goto error;
-            }
-            if_conf->key = key;
-            free(key_id);
         } else if(strcmp(token, "accept-bad-signatures") == 0) {
             int v;
             c = getbool(c, &v, gnc, closure);
@@ -736,112 +688,6 @@ parse_ifconf(int c, gnc_t gnc, void *closure,
 
  error:
     free(if_conf);
-    return -2;
-}
-
-static int
-parse_key(int c, gnc_t gnc, void *closure, struct key **key_return)
-{
-    char *token = NULL;
-    struct key *key;
-
-    key = calloc(1, sizeof(struct key));
-    if(key == NULL) {
-        perror("calloc(key)");
-        return -2;
-    }
-    while(1) {
-        c = skip_whitespace(c, gnc, closure);
-        if(c < 0 || c == '\n' || c == '#') {
-            c = skip_to_eol(c, gnc, closure);
-            break;
-        }
-        c = getword(c, &token, gnc, closure);
-        if(c < -1 || token == NULL) {
-            goto error;
-        }
-        if(strcmp(token, "id") == 0) {
-            c = getword(c, &key->id, gnc, closure);
-            if(c < -1 || key->id == NULL) {
-                goto error;
-            }
-        } else if(strcmp(token, "type") == 0) {
-            char *auth_type = NULL;
-            c = getword(c, &auth_type, gnc, closure);
-            if(c < -1 || auth_type == NULL) {
-                free(auth_type);
-                goto error;
-            }
-            if(strcmp(auth_type, "none") == 0) {
-                key->type = AUTH_TYPE_NONE;
-            } else if(strcmp(auth_type, "hmac-sha256") == 0) {
-                key->type = AUTH_TYPE_SHA256;
-            } else if(strcmp(auth_type, "blake2s128") == 0) {
-                key->type = AUTH_TYPE_BLAKE2S128;
-            } else {
-                fprintf(stderr, "Key type '%s' isn't supported.\n", auth_type);
-                free(auth_type);
-                goto error;
-            }
-            free(auth_type);
-        } else if(strcmp(token, "value") == 0) {
-            c = gethex(c, &key->value, &key->len, gnc, closure);
-            if(c < -1 || key->value == NULL) {
-                fprintf(stderr, "Couldn't parse key value.\n");
-                goto error;
-            }
-        } else {
-            fprintf(stderr, "Unrecognized keyword '%s'.\n", token);
-            goto error;
-        }
-        free(token);
-        token = NULL;
-    }
-
-    if(key->id == NULL) {
-        fprintf(stderr, "No key id was given.\n");
-        goto error;
-    }
-
-    switch(key->type) {
-    case AUTH_TYPE_SHA256: {
-        if(key->len > 64) {
-            fprintf(stderr, "Key length is %d, expected at most %d.\n",
-                    key->len, 64);
-            goto error;
-        }
-        if(key->len < 64) {
-            unsigned char *v = realloc(key->value, 64);
-            if(v == NULL) {
-                perror("realloc(key->value)");
-                goto error;
-            }
-            memset(v + key->len, 0, 64 - key->len);
-            key->value = v;
-            key->len = 64;
-        }
-        break;
-    }
-    case AUTH_TYPE_BLAKE2S128:
-        if(key->len < 1 || key->len > 32) {
-            fprintf(stderr, "Key length is %d, expected 1 to 32.\n",
-                    key->len);
-            goto error;
-        }
-        break;
-    default:
-        fprintf(stderr, "Key type 'none' isn't supported.\n");
-        goto error;
-    }
-
-    *key_return = key;
-    return c;
-
- error:
-    free(token);
-    free(key->value);
-    free(key->id);
-    free(key);
     return -2;
 }
 
@@ -1251,13 +1097,6 @@ parse_config_line(int c, gnc_t gnc, void *closure,
         if(c < -1 || !action_return)
             goto fail;
         reopen_logfile();
-    } else if(strcmp(token, "key") == 0) {
-        struct key *key = NULL;
-        c = parse_key(c, gnc, closure, &key);
-        if(c < -1)
-            goto fail;
-        add_key(key->id, key->type, key->len, key->value);
-        free(key);
     } else {
         c = parse_option(c, gnc, closure, token);
         if(c < -1)

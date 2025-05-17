@@ -43,7 +43,6 @@ THE SOFTWARE.
 #include "configuration.h"
 #include "local.h"
 #include "xroute.h"
-#include "hmac.h"
 
 #define MIN_MTU 512
 
@@ -465,15 +464,6 @@ interface_updown(struct interface *ifp, int up)
 
         update_interface_metric(ifp);
         rc = check_interface_ipv4(ifp);
-
-        if(IF_CONF(ifp, key) != ifp->key) {
-            if(ifp->key != NULL)
-                release_key(ifp->key);
-            if(IF_CONF(ifp, key) != NULL)
-                ifp->key = retain_key(IF_CONF(ifp, key));
-            else
-                ifp->key = NULL;
-        }
 
         debugf("Upped interface %s (cost=%d%s).\n",
                ifp->name,

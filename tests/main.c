@@ -20,7 +20,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
 
-#include "hmac_test.h"
 #include "route_test.h"
 #include "test_utilities.h"
 #include "util_test.h"
@@ -28,7 +27,6 @@ THE SOFTWARE.
 int main(int argc, char **argv)
 {
     run_suite(util_test_suite, "util.c");
-    run_suite(hmac_test_suite, "hmac.c");
     run_suite(route_test_suite, "route.c");
     return tests_failed;
 }

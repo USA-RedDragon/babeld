@@ -43,7 +43,6 @@ THE SOFTWARE.
 #include "resend.h"
 #include "message.h"
 #include "configuration.h"
-#include "hmac.h"
 
 unsigned char packet_header[4] = {42, 2};
 
@@ -431,147 +430,6 @@ network_address(int ae, const unsigned char *a, unsigned int len,
     return network_prefix(ae, -1, 0, a, NULL, len, a_r);
 }
 
-static struct neighbour *
-preparse_packet(const unsigned char *from, struct interface *ifp,
-                const unsigned char *body, int bodylen,
-                const unsigned char *to)
-{
-    int rc, i;
-    struct neighbour *neigh = NULL;
-    int challenge_success = 0, accept_packet = 0;
-    const unsigned char *pc = NULL, *index = NULL, *nonce = NULL;
-    int index_len, nonce_len = 0;
-
-    i = 0;
-    while(i < bodylen) {
-        const unsigned char *message = body + 4 + i;
-        unsigned char len, type = message[0];
-        if(type == MESSAGE_PAD1) {
-            i++;
-            continue;
-        }
-        if(i + 2 > bodylen) {
-            fprintf(stderr, "Received truncated message.\n");
-            break;
-        }
-        len = message[1];
-        if(i + len + 2 > bodylen) {
-            fprintf(stderr, "Received truncated message.\n");
-            break;
-        }
-        if(type == MESSAGE_PC) {
-            unsigned int pcnat;
-
-            if(index != NULL)
-                goto done;
-
-            if(len < 4) {
-                fprintf(stderr, "Received truncated PC TLV.\n");
-                break;
-            }
-            if(len > 4 + 32) {
-                fprintf(stderr, "Overlong PC TLV.\n");
-                break;
-            }
-
-            pc = message + 2;
-            index = message + 6;
-            index_len = len - 4;
-
-            memcpy(&pcnat, pc, 4);
-            debugf("Received PC %u from %s.\n",
-                   ntohl(pcnat), format_address(from));
-        } else if(type == MESSAGE_CHALLENGE_REQUEST) {
-            if(to[0] == 0xff)   /* multicast */
-                goto done;
-
-            if(len > 192) {
-                fprintf(stderr, "Overlong challenge request TLV.\n");
-                break;
-            }
-
-            nonce = message + 2;
-            nonce_len = len;
-
-            debugf("Received challenge request from %s.\n",
-                   format_address(from));
-        } else if(type == MESSAGE_CHALLENGE_REPLY) {
-            if(len > 192) {
-                fprintf(stderr, "Overlong challenge reply TLV.\n");
-                break;
-            }
-
-            debugf("Received challenge reply from %s.\n",
-                   format_address(from));
-
-            neigh = neigh != NULL ? neigh : find_neighbour(from, ifp);
-            if(neigh == NULL)
-                goto done;
-
-            gettime(&now);
-            if(timeval_compare(&now, &neigh->challenge_deadline) > 0) {
-                debugf("No pending challenge.\n");
-                goto done;
-            }
-
-            if(len == sizeof(neigh->nonce) &&
-               memcmp(neigh->nonce, message + 2, len) == 0) {
-                const struct timeval zero = {0, 0};
-                challenge_success = 1;
-                neigh->challenge_deadline = zero;
-                debugf("Challenge succeeded!\n");
-            } else {
-                debugf("Challenge failed.\n");
-            }
-        }
-    done:
-        i += len + 2;
-    }
-
-    if(index == NULL) {
-        debugf("No PC in packet.\n");
-    } else if(challenge_success) {
-        neigh->index_len = index_len;
-        memcpy(neigh->index, index, index_len);
-        memcpy(neigh->pc_m, pc, 4);
-        memcpy(neigh->pc_u, pc, 4);
-        accept_packet = 1;
-    } else {
-        neigh = neigh != NULL ? neigh : find_neighbour(from, ifp);
-        if(neigh == NULL)
-            return NULL;
-        if(neigh->index_len == -1 ||
-           neigh->index_len != index_len ||
-           memcmp(index, neigh->index, index_len) != 0) {
-            rc = send_challenge_request(neigh);
-            if(rc < -1)
-                fputs("Could not send challenge request.\n", stderr);
-        } else {
-            unsigned char *last_pc;
-            if(to[0] == 0xff)
-                last_pc = neigh->pc_m;
-            else
-                last_pc = neigh->pc_u;
-            if(memcmp(pc, last_pc, 4) <= 0) {
-                debugf("Out of order PC.\n");
-                nonce = NULL;
-            } else {
-                memcpy(last_pc, pc, 4);
-                accept_packet = 1;
-            }
-        }
-    }
-
-    if(nonce != NULL) { /* a challenge request was received */
-        neigh = neigh != NULL ? neigh : find_neighbour(from, ifp);
-        if(neigh == NULL)
-            return NULL;
-        send_challenge_reply(neigh, nonce, nonce_len);
-    }
-    debugf("accept_packet: %d, neigh: %p.\n", accept_packet, (void*)neigh);
-    return accept_packet ? neigh : NULL;
-}
-
 void
 parse_packet(const unsigned char *from, struct interface *ifp,
              const unsigned char *packet, int packetlen,
@@ -621,24 +479,6 @@ parse_packet(const unsigned char *from, struct interface *ifp,
         fprintf(stderr, "Received truncated packet (%d + 4 > %d).\n",
                 bodylen, packetlen);
         bodylen = packetlen - 4;
-    }
-
-    if(ifp->key != NULL) {
-        int rc = check_hmac(packet, packetlen, bodylen, from, to, ifp);
-        if(rc <= 0) {
-            if(rc < 0)
-                debugf("Received unsigned packet.\n");
-            else
-                debugf("Received packet with bad signature.\n");
-            if(!(ifp->flags & IF_ACCEPT_BAD_SIGNATURES))
-                return;
-        } else {
-            neigh = preparse_packet(from, ifp, packet, bodylen, to);
-            if(neigh == NULL) {
-                debugf("PC check failed.\n");
-                return;
-            }
-        }
     }
 
     if(neigh == NULL)
@@ -1135,18 +975,9 @@ flushbuf(struct buffered *buf, struct interface *ifp)
 
     if(buf->len > 0) {
         int probe;
-        if(ifp->key != NULL && ifp->key->type != AUTH_TYPE_NONE)
-            send_pc(buf, ifp);
         debugf("  (flushing %d buffered bytes)\n", buf->len);
         DO_HTONS(packet_header + 2, buf->len);
         fill_rtt_message(buf, ifp);
-        if(ifp->key != NULL && ifp->key->type != AUTH_TYPE_NONE) {
-            end = add_hmac(buf, ifp, packet_header);
-            if(end < 0) {
-                fprintf(stderr, "Couldn't add HMAC.\n");
-                return;
-            }
-        }
         probe = (ifp->flags & IF_PROBE_MTU) != 0 && ifp->buf.hello >= 0;
         if(probe) {
             /* pad the packet to the MTU */
@@ -1294,28 +1125,6 @@ accumulate_bytes(struct buffered *buf,
     buf->len += len;
 }
 
-int
-send_pc(struct buffered *buf, struct interface *ifp)
-{
-    int space = MAX_HMAC_SPACE + 6 + INDEX_LEN;
-    if(buf->size - buf->len < space) {
-        fputs("send_pc: no space left to accumulate pc.\n", stderr);
-        return -1;
-    }
-    if(ifp->pc == 0) {
-        int rc;
-        rc = read_random_bytes(ifp->index, INDEX_LEN);
-        if(rc < INDEX_LEN)
-            return -1;
-    }
-    accumulate_byte(buf, MESSAGE_PC);
-    accumulate_byte(buf, 4 + INDEX_LEN);
-    accumulate_int(buf, ifp->pc);
-    accumulate_bytes(buf, ifp->index, INDEX_LEN);
-    ifp->pc++;
-    return 0;
-}
-
 void
 send_ack(struct neighbour *neigh, unsigned short nonce, unsigned short interval)
 {
@@ -1326,51 +1135,6 @@ send_ack(struct neighbour *neigh, unsigned short nonce, unsigned short interval)
     end_message(&neigh->buf, MESSAGE_ACK, 2);
     /* Roughly yields a value no larger than 3/2, so this meets the deadline */
     schedule_flush_ms(&neigh->buf, roughly(interval * 6));
-}
-
-int
-send_challenge_request(struct neighbour *neigh)
-{
-    int rc;
-
-    gettime(&now);
-    if(timeval_compare(&now, &neigh->challenge_request_limitation) <= 0)
-        return -1;
-
-    debugf("Sending challenge request to %s on %s.\n",
-           format_address(neigh->address), neigh->ifp->name);
-    rc = read_random_bytes(neigh->nonce, NONCE_LEN);
-    if(rc < NONCE_LEN) {
-        perror("read_random_bytes");
-        return -2;
-    }
-    start_message(&neigh->buf, neigh->ifp, MESSAGE_CHALLENGE_REQUEST, NONCE_LEN);
-    accumulate_bytes(&neigh->buf, neigh->nonce, NONCE_LEN);
-    end_message(&neigh->buf, MESSAGE_CHALLENGE_REQUEST, NONCE_LEN);
-    gettime(&now);
-    timeval_add_msec(&neigh->challenge_deadline, &now, 30000);
-    timeval_add_msec(&neigh->challenge_request_limitation, &now, 300);
-    schedule_flush_now(&neigh->buf);
-    return 0;
-}
-
-int
-send_challenge_reply(struct neighbour *neigh, const unsigned char *crypto_nonce,
-                     int len)
-{
-    gettime(&now);
-    if(timeval_compare(&now, &neigh->challenge_reply_limitation) <= 0)
-        return -1;
-
-    debugf("Sending challenge reply to %s on %s.\n",
-           format_address(neigh->address), neigh->ifp->name);
-    start_message(&neigh->buf, neigh->ifp, MESSAGE_CHALLENGE_REPLY, len);
-    accumulate_bytes(&neigh->buf, crypto_nonce, len);
-    end_message(&neigh->buf, MESSAGE_CHALLENGE_REPLY, len);
-    gettime(&now);
-    timeval_add_msec(&neigh->challenge_reply_limitation, &now, 300);
-    schedule_flush_now(&neigh->buf);
-    return 0;
 }
 
 static void
