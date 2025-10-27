@@ -1336,6 +1336,8 @@ input_filter(const unsigned char *id,
              const unsigned char *neigh, unsigned int ifindex)
 {
     int res;
+    if (!input_filters)
+        return 0;
     res = do_filter(input_filters, id, prefix, plen,
                     src_prefix, src_plen, neigh, ifindex, 0, NULL);
     if(res < 0)
@@ -1350,6 +1352,8 @@ output_filter(const unsigned char *id,
               unsigned int ifindex)
 {
     int res;
+    if (!output_filters)
+        return 0;
     res = do_filter(output_filters, id, prefix, plen,
                     src_prefix, src_plen, NULL, ifindex, 0, NULL);
     if(res < 0)
@@ -1364,6 +1368,8 @@ redistribute_filter(const unsigned char *prefix, unsigned short plen,
                     struct filter_result *result)
 {
     int res;
+    if (!redistribute_filters)
+        return INFINITY;
     res = do_filter(redistribute_filters, NULL, prefix, plen,
                     src_prefix, src_plen, NULL, ifindex, proto, result);
     if(res < 0)
@@ -1379,6 +1385,8 @@ install_filter(const unsigned char *id,
                struct filter_result *result)
 {
     int res;
+    if (!install_filters)
+        return INFINITY;
     res = do_filter(install_filters, id, prefix, plen,
                     src_prefix, src_plen, NULL, ifindex, 0, result);
     if(res < 0)
