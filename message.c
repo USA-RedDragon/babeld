@@ -1549,6 +1549,7 @@ buffer_update(struct interface *ifp,
             ifp->buffered_updates = malloc(n * sizeof(struct buffered_update));
             if(ifp->buffered_updates == NULL) {
                 perror("malloc(buffered_updates)");
+                ifp->update_bufsize = 0;
                 return;
             }
             ifp->update_bufsize = n;
